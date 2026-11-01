@@ -1,10 +1,16 @@
 import asyncio
 import json
+import http
+import os
 import websockets
 
 rooms = {}
 
-async def handler(websocket, path):
+async def health_check(connection, request):
+    # 讓 UptimeRobot 或瀏覽器訪問時回傳 HTTP 200，防止休眠並解決報錯
+    return http.HTTPStatus.OK, [("Content-Type", "text/plain")], b"Let's Chat Server is Running!"
+
+async def handler(websocket):
     current_room = None
     player_info = {}
 
@@ -115,9 +121,9 @@ async def broadcast_chat(room_id, sender, msg):
         await asyncio.gather(*[ws.send(payload) for ws in webs], return_exceptions=True)
 
 async def main():
-    import os
     port = int(os.environ.get("PORT", 8765))
-    async with websockets.serve(handler, "0.0.0.0", port):
+    # 加入 process_request，完美相容 HTTP 請求與 WebSocket
+    async with websockets.serve(handler, "0.0.0.0", port, process_request=health_check):
         print(f"Server started on port {port}")
         await asyncio.Future()
 
