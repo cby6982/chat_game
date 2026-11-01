@@ -1,21 +1,28 @@
-import asyncio
 import json
-import http
 import os
-import websockets
+import random
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse
 
+app = FastAPI()
+
+# 儲存房間資料
 rooms = {}
 
-async def health_check(connection, request):
-    # 讓 UptimeRobot 或瀏覽器訪問時回傳 HTTP 200，防止休眠並解決報錯
-    return http.HTTPStatus.OK, [("Content-Type", "text/plain")], b"Let's Chat Server is Running!"
+@app.get("/")
+def health_check():
+    # 專門用來給 UptimeRobot 或瀏覽器確認伺服器活著，絕不會報錯
+    return PlainTextResponse("Let's Chat Server is Running!")
 
-async def handler(websocket):
+@app.websocket("/")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
     current_room = None
-    player_info = {}
+    player_name = ""
 
     try:
-        async for message in websocket:
+        while True:
+            message = await websocket.receive_text()
             data = json.loads(message)
             action = data.get("action")
 
@@ -29,48 +36,44 @@ async def handler(websocket):
                         "host": rdata["host"],
                         "current_players": len(rdata["players"])
                     })
-                await websocket.send(json.dumps({"type": "ROOM_LIST", "rooms": room_list}))
+                await websocket.send_text(json.dumps({"type": "ROOM_LIST", "rooms": room_list}))
 
             elif action == "CREATE_ROOM":
-                import random
                 room_id = str(random.randint(1000, 9999))
                 r_name = data.get("room_name", "聊天房")
                 r_type = data.get("room_type", "公開")
-                p_name = data.get("name", "玩家")
+                player_name = data.get("name", "玩家")
 
                 color = [random.randint(50, 200), random.randint(100, 255), 200]
 
                 rooms[room_id] = {
                     "name": r_name,
                     "type": r_type,
-                    "host": p_name,
+                    "host": player_name,
                     "players": {
-                        websocket: {"name": p_name, "x": 0.0, "y": 0.0, "color": color}
+                        websocket: {"name": player_name, "x": 0.0, "y": 0.0, "color": color}
                     }
                 }
                 current_room = room_id
-                player_info = {"name": p_name}
                 
-                await websocket.send(json.dumps({"type": "JOIN_SUCCESS", "room_id": room_id}))
+                await websocket.send_text(json.dumps({"type": "JOIN_SUCCESS", "room_id": room_id}))
                 await broadcast_room_state(room_id)
 
             elif action == "JOIN_ROOM":
                 room_id = data.get("room_id")
-                p_name = data.get("name", "玩家")
+                player_name = data.get("name", "玩家")
 
                 if room_id in rooms:
-                    import random
                     color = [random.randint(50, 200), random.randint(100, 255), 200]
                     rooms[room_id]["players"][websocket] = {
-                        "name": p_name, "x": 0.0, "y": 0.0, "color": color
+                        "name": player_name, "x": 0.0, "y": 0.0, "color": color
                     }
                     current_room = room_id
-                    player_info = {"name": p_name}
 
-                    await websocket.send(json.dumps({"type": "JOIN_SUCCESS", "room_id": room_id}))
+                    await websocket.send_text(json.dumps({"type": "JOIN_SUCCESS", "room_id": room_id}))
                     await broadcast_room_state(room_id)
                 else:
-                    await websocket.send(json.dumps({"type": "ERROR", "msg": "房間不存在！"}))
+                    await websocket.send_text(json.dumps({"type": "ERROR", "msg": "房間不存在！"}))
 
             elif action == "MOVE":
                 if current_room and current_room in rooms:
@@ -82,10 +85,9 @@ async def handler(websocket):
             elif action == "CHAT":
                 if current_room and current_room in rooms:
                     msg = data.get("msg")
-                    sender = player_info.get("name", "某人")
-                    await broadcast_chat(current_room, sender, msg)
+                    await broadcast_chat(current_room, player_name, msg)
 
-    except websockets.exceptions.ConnectionClosed:
+    except WebSocketDisconnect:
         pass
     finally:
         if current_room and current_room in rooms:
@@ -110,22 +112,18 @@ async def broadcast_room_state(room_id):
         "players": player_list
     })
     webs = list(rdata["players"].keys())
-    if webs:
-        await asyncio.gather(*[ws.send(payload) for ws in webs], return_exceptions=True)
+    for ws in webs:
+        try:
+            await ws.send_text(payload)
+        except:
+            pass
 
 async def broadcast_chat(room_id, sender, msg):
     if room_id not in rooms: return
     payload = json.dumps({"type": "CHAT", "sender": sender, "msg": msg})
     webs = list(rdata["players"].keys())
-    if webs:
-        await asyncio.gather(*[ws.send(payload) for ws in webs], return_exceptions=True)
-
-async def main():
-    port = int(os.environ.get("PORT", 8765))
-    # 加入 process_request，完美相容 HTTP 請求與 WebSocket
-    async with websockets.serve(handler, "0.0.0.0", port, process_request=health_check):
-        print(f"Server started on port {port}")
-        await asyncio.Future()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    for ws in webs:
+        try:
+            await ws.send_text(payload)
+        except:
+            pass
